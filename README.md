@@ -115,6 +115,17 @@ npm run dev
 npm run build
 ```
 
+## Deployment
+
+這個 repo 已經配置好 `GitHub Pages` 自動部署。
+
+- Production URL:
+  [https://z12128082.github.io/semiconductor-digital-twin/](https://z12128082.github.io/semiconductor-digital-twin/)
+- Deploy trigger:
+  push 到 `main` 後，GitHub Actions 會自動 build 並部署
+
+第一次啟用時，若 GitHub 還沒開始發布頁面，到 repo 的 `Settings > Pages` 把 source 設成 `GitHub Actions` 即可。
+
 ## Controls
 
 - 左鍵拖曳：旋轉視角
