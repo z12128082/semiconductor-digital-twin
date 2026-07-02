@@ -1,0 +1,825 @@
+import {
+  ACESFilmicToneMapping,
+  AmbientLight,
+  Box3,
+  BoxGeometry,
+  Clock,
+  Color,
+  DirectionalLight,
+  Fog,
+  Group,
+  MathUtils,
+  Mesh,
+  MeshStandardMaterial,
+  PerspectiveCamera,
+  PlaneGeometry,
+  Scene,
+  SRGBColorSpace,
+  Vector3,
+  Vector2,
+  WebGLRenderer,
+} from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import {
+  Event as ComponentsEvent,
+  FastModelPicker,
+} from '@thatopen/components'
+import { RenderedFaces, type FragmentsModel } from '@thatopen/fragments'
+
+import { IfcModelLoader } from './ifc-model-loader'
+import { TelemetryMockController } from './telemetry-mock-controller'
+import {
+  getCategoryLayerSummaries,
+  getFederatedModelSummaries,
+  getTelemetryForItem,
+  getTelemetryStatusGroupsByModel,
+  getSelectedSpatialTreeNodeSummary,
+  isolateCategoryLayer as isolateCategoryLayerState,
+  isolateFederatedModel as isolateFederatedModelState,
+  renameFederatedModel,
+  resetLayerState as resetLayerStateStore,
+  setCategoryLayerOpacity as setCategoryLayerOpacityState,
+  setCategoryLayerVisibility as setCategoryLayerVisibilityState,
+  setFederatedModelOpacity as setFederatedModelOpacityState,
+  setFederatedModelVisibility as setFederatedModelVisibilityState,
+  setIfcLoadSummary,
+  setSelectedIfcItemSummary,
+  setSelectedSpatialTreeNodeSummary,
+} from '../state'
+
+type DeviceStatus = 'normal' | 'warning' | 'alert'
+
+interface DeviceMarker {
+  readonly baseY: number
+  readonly mesh: Mesh<BoxGeometry, MeshStandardMaterial>
+  readonly pulseOffset: number
+  readonly status: DeviceStatus
+}
+
+interface DeviceLayout {
+  id: string
+  position: [x: number, y: number, z: number]
+  size: [x: number, y: number, z: number]
+  status: DeviceStatus
+}
+
+const CAMERA_START = new Vector3(18, 16, 24)
+const CAMERA_TARGET = new Vector3(0, 2.5, 0)
+const STATUS_COLORS: Record<DeviceStatus, string> = {
+  normal: '#69e8b2',
+  warning: '#ffb454',
+  alert: '#ff6b67',
+}
+
+const HIGHLIGHT_STYLE = {
+  color: new Color('#69e8b2'),
+  opacity: 1,
+  renderedFaces: RenderedFaces.TWO,
+  transparent: false,
+}
+
+const NORMAL_COLOR = new Color('#69e8b2')
+const WARNING_COLOR = new Color('#ffb454')
+const ALERT_COLOR = new Color('#ff6b67')
+const FEDERATED_GAP = 4
+
+const DEVICE_LAYOUT: DeviceLayout[] = [
+  { id: 'litho-01', position: [-9, 1.5, -6], size: [3.2, 3, 2.4], status: 'normal' },
+  { id: 'etch-01', position: [-4.5, 1.65, -6], size: [2.8, 3.3, 2.2], status: 'normal' },
+  { id: 'cmp-01', position: [0, 1.45, -6], size: [3.1, 2.9, 2.3], status: 'warning' },
+  { id: 'pvd-01', position: [4.5, 1.55, -6], size: [2.9, 3.1, 2.3], status: 'normal' },
+  { id: 'cvd-01', position: [9, 1.55, -6], size: [3, 3.1, 2.2], status: 'alert' },
+  { id: 'upw-loop-a', position: [-9, 1.25, 0], size: [2.8, 2.5, 2.1], status: 'normal' },
+  { id: 'scrubber-02', position: [-4.5, 1.25, 0], size: [2.8, 2.5, 2.1], status: 'warning' },
+  { id: 'ahu-03', position: [0, 1.35, 0], size: [3.4, 2.7, 2.1], status: 'normal' },
+  { id: 'chiller-01', position: [4.5, 1.3, 0], size: [3.2, 2.6, 2.2], status: 'normal' },
+  { id: 'fmcs-gateway', position: [9, 1.15, 0], size: [2.3, 2.3, 2], status: 'alert' },
+  { id: 'diffusion-01', position: [-6.75, 1.6, 6], size: [3.1, 3.2, 2.2], status: 'normal' },
+  { id: 'metrology-01', position: [-2.25, 1.35, 6], size: [2.5, 2.7, 2], status: 'normal' },
+  { id: 'clean-buffer', position: [2.25, 1.2, 6], size: [2.3, 2.4, 2], status: 'warning' },
+  { id: 'exhaust-bank', position: [6.75, 1.55, 6], size: [3.5, 3.1, 2.2], status: 'normal' },
+]
+
+export class DigitalTwinScene {
+  private readonly clock = new Clock()
+  private readonly controls: OrbitControls
+  private readonly camera: PerspectiveCamera
+  private readonly host: HTMLDivElement
+  private readonly ifcLoader = new IfcModelLoader()
+  private readonly telemetry = new TelemetryMockController()
+  private readonly ifcPicker: FastModelPicker
+  private readonly ifcPickerResizeEvent: ComponentsEvent<Vector2>
+  private readonly ifcPickerWorld: {
+    camera: { three: PerspectiveCamera }
+    onDisposed: ComponentsEvent<unknown>
+    renderer: {
+      onResize: ComponentsEvent<Vector2>
+      three: WebGLRenderer
+    }
+    scene: { three: Scene }
+    uuid: string
+  }
+  private readonly pointer = new Vector2()
+  private readonly renderer: WebGLRenderer
+  private readonly resizeObserver: ResizeObserver
+  private readonly scene = new Scene()
+  private readonly deviceMarkers: DeviceMarker[] = []
+  private readonly placeholderGroup = new Group()
+  private readonly ifcModels = new Map<string, FragmentsModel>()
+  private lastTelemetryPaintSignatureByModel = new Map<string, string>()
+  private frameHandle = 0
+
+  constructor(host: HTMLDivElement) {
+    this.host = host
+    this.scene.background = new Color('#07111a')
+    this.scene.fog = new Fog('#07111a', 24, 64)
+
+    this.camera = new PerspectiveCamera(42, 1, 0.1, 250)
+    this.camera.position.copy(CAMERA_START)
+
+    this.renderer = new WebGLRenderer({ antialias: true })
+    this.renderer.outputColorSpace = SRGBColorSpace
+    this.renderer.toneMapping = ACESFilmicToneMapping
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+
+    this.host.append(this.renderer.domElement)
+
+    this.ifcPickerResizeEvent = new ComponentsEvent<Vector2>()
+    this.ifcPickerWorld = {
+      camera: { three: this.camera },
+      onDisposed: new ComponentsEvent<unknown>(),
+      renderer: {
+        onResize: this.ifcPickerResizeEvent,
+        three: this.renderer,
+      },
+      scene: { three: this.scene },
+      uuid: 'ifc-picking-world',
+    }
+    this.ifcPicker = new FastModelPicker(
+      this.ifcLoader.components,
+      this.ifcPickerWorld as never,
+    )
+
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement)
+    this.controls.enableDamping = true
+    this.controls.target.copy(CAMERA_TARGET)
+    this.controls.minDistance = 12
+    this.controls.maxDistance = 48
+    this.controls.maxPolarAngle = MathUtils.degToRad(78)
+    this.renderer.domElement.addEventListener('click', (event) => {
+      void this.handleSceneClick(event)
+    })
+
+    this.setupLights()
+    this.setupEnvironment()
+    this.buildPlaceholderFab()
+    void this.loadBundledIfcSample()
+
+    this.resizeObserver = new ResizeObserver(() => {
+      this.resize()
+    })
+    this.resizeObserver.observe(this.host)
+
+    this.resize()
+    this.animate = this.animate.bind(this)
+    this.frameHandle = window.requestAnimationFrame(this.animate)
+  }
+
+  dispose(): void {
+    window.cancelAnimationFrame(this.frameHandle)
+    this.resizeObserver.disconnect()
+    this.controls.dispose()
+    this.ifcPicker.dispose()
+    this.ifcLoader.dispose()
+    this.telemetry.stop()
+    this.renderer.dispose()
+    this.host.replaceChildren()
+  }
+
+  private setupLights(): void {
+    const ambient = new AmbientLight('#d8ecff', 0.55)
+    const keyLight = new DirectionalLight('#dff3ff', 2.6)
+    keyLight.position.set(14, 22, 10)
+
+    const rimLight = new DirectionalLight('#69e8b2', 0.8)
+    rimLight.position.set(-10, 8, -12)
+
+    this.scene.add(ambient, keyLight, rimLight)
+  }
+
+  private setupEnvironment(): void {
+    const floor = new Mesh(
+      new BoxGeometry(34, 1, 22),
+      new MeshStandardMaterial({
+        color: '#10283a',
+        roughness: 0.88,
+        metalness: 0.12,
+      }),
+    )
+    floor.position.set(0, -0.5, 0)
+    this.scene.add(floor)
+
+    const cleanroom = new Mesh(
+      new BoxGeometry(29, 0.25, 18),
+      new MeshStandardMaterial({
+        color: '#15374d',
+        roughness: 0.6,
+        metalness: 0.16,
+      }),
+    )
+    cleanroom.position.set(0, 0.02, 0)
+    this.scene.add(cleanroom)
+
+    const aisle = new Mesh(
+      new PlaneGeometry(28, 2.6),
+      new MeshStandardMaterial({
+        color: '#1f4258',
+        emissive: '#173343',
+        emissiveIntensity: 0.25,
+        metalness: 0.08,
+        roughness: 0.72,
+      }),
+    )
+    aisle.rotation.x = -Math.PI / 2
+    aisle.position.set(0, 0.14, 0)
+    this.scene.add(aisle)
+
+    const serviceBridge = new Mesh(
+      new BoxGeometry(24, 0.5, 1.2),
+      new MeshStandardMaterial({
+        color: '#27516b',
+        roughness: 0.48,
+        metalness: 0.22,
+      }),
+    )
+    serviceBridge.position.set(0, 6.5, -8.6)
+    this.scene.add(serviceBridge)
+
+    const pipeRun = new Mesh(
+      new BoxGeometry(24, 0.28, 0.32),
+      new MeshStandardMaterial({
+        color: '#6ce6b1',
+        emissive: '#6ce6b1',
+        emissiveIntensity: 0.18,
+        roughness: 0.42,
+        metalness: 0.28,
+      }),
+    )
+    pipeRun.position.set(0, 6.95, -8.25)
+    this.scene.add(pipeRun)
+
+    const wallMaterial = new MeshStandardMaterial({
+      color: '#0c202f',
+      roughness: 0.88,
+      metalness: 0.06,
+      transparent: true,
+      opacity: 0.46,
+    })
+
+    const northWall = new Mesh(new BoxGeometry(34, 9, 0.6), wallMaterial)
+    northWall.position.set(0, 4.5, -11)
+    this.scene.add(northWall)
+
+    const eastWall = new Mesh(new BoxGeometry(0.6, 9, 22), wallMaterial)
+    eastWall.position.set(17, 4.5, 0)
+    this.scene.add(eastWall)
+  }
+
+  private buildPlaceholderFab(): void {
+    const equipmentGroup = this.placeholderGroup
+
+    for (const [index, device] of DEVICE_LAYOUT.entries()) {
+      const material = new MeshStandardMaterial({
+        color: STATUS_COLORS[device.status],
+        emissive: STATUS_COLORS[device.status],
+        emissiveIntensity: device.status === 'alert' ? 0.45 : 0.16,
+        roughness: 0.42,
+        metalness: 0.2,
+      })
+
+      const mesh = new Mesh(new BoxGeometry(...device.size), material)
+      mesh.name = device.id
+      mesh.position.set(...device.position)
+      mesh.receiveShadow = true
+      equipmentGroup.add(mesh)
+
+      this.deviceMarkers.push({
+        baseY: device.position[1],
+        mesh,
+        pulseOffset: index * 0.45,
+        status: device.status,
+      })
+    }
+
+    const pipeRackMaterial = new MeshStandardMaterial({
+      color: '#2f627f',
+      roughness: 0.44,
+      metalness: 0.24,
+    })
+
+    const pipeRacks = [
+      new Vector3(-10.8, 4.4, -2.8),
+      new Vector3(0, 4.4, -2.8),
+      new Vector3(10.8, 4.4, -2.8),
+      new Vector3(-5.4, 4.4, 3.8),
+      new Vector3(5.4, 4.4, 3.8),
+    ]
+
+    for (const rackPosition of pipeRacks) {
+      const rack = new Mesh(new BoxGeometry(5.8, 0.36, 1.6), pipeRackMaterial)
+      rack.position.copy(rackPosition)
+      equipmentGroup.add(rack)
+    }
+
+    this.scene.add(equipmentGroup)
+  }
+
+  async loadLocalIfcFile(file: File): Promise<void> {
+    await this.loadIfcModel(() => this.ifcLoader.loadLocalFile(file), false)
+  }
+
+  async setFederatedModelVisibility(payload: {
+    modelId: string
+    visible: boolean
+  }): Promise<void> {
+    const model = this.ifcModels.get(payload.modelId)
+
+    if (!model) {
+      return
+    }
+
+    model.object.visible = payload.visible
+    setFederatedModelVisibilityState(payload.modelId, payload.visible)
+  }
+
+  async setFederatedModelOpacity(payload: {
+    modelId: string
+    opacity: number
+  }): Promise<void> {
+    const model = this.ifcModels.get(payload.modelId)
+
+    if (!model) {
+      return
+    }
+
+    await model.setOpacity(undefined, payload.opacity)
+    setFederatedModelOpacityState(payload.modelId, payload.opacity)
+  }
+
+  async setCategoryLayerVisibility(payload: {
+    category: string
+    modelId: string
+    visible: boolean
+  }): Promise<void> {
+    const model = this.ifcModels.get(payload.modelId)
+
+    if (!model) {
+      return
+    }
+
+    const layer = getCategoryLayerSummaries().find(
+      (item) => item.modelId === payload.modelId && item.category === payload.category,
+    )
+
+    if (!layer) {
+      return
+    }
+
+    const localIds = this.ifcLoader.getCategoryLocalIds(payload.modelId, payload.category)
+    await model.setVisible(localIds, payload.visible)
+    setCategoryLayerVisibilityState(payload.modelId, payload.category, payload.visible)
+  }
+
+  async setCategoryLayerOpacity(payload: {
+    category: string
+    modelId: string
+    opacity: number
+  }): Promise<void> {
+    const model = this.ifcModels.get(payload.modelId)
+
+    if (!model) {
+      return
+    }
+
+    const localIds = this.ifcLoader.getCategoryLocalIds(payload.modelId, payload.category)
+    await model.setOpacity(localIds, payload.opacity)
+    setCategoryLayerOpacityState(payload.modelId, payload.category, payload.opacity)
+  }
+
+  renameSpecificModel(payload: {
+    modelId: string
+    modelLabel: string
+  }): void {
+    this.ifcLoader.renameModel(payload.modelId, payload.modelLabel)
+    this.telemetry.renameModel(payload.modelId, payload.modelLabel)
+    renameFederatedModel(payload.modelId, payload.modelLabel)
+  }
+
+  fitSpecificModel(modelId: string): void {
+    const model = this.ifcModels.get(modelId)
+
+    if (!model) {
+      return
+    }
+
+    const box = model.box.clone().applyMatrix4(model.object.matrixWorld)
+    this.fitCameraToBounds(box)
+  }
+
+  async removeSpecificModel(modelId: string): Promise<void> {
+    const model = this.ifcModels.get(modelId)
+
+    if (!model) {
+      return
+    }
+
+    this.scene.remove(model.object)
+    await model.dispose()
+    this.ifcLoader.removeModel(modelId)
+    this.telemetry.removeModel(modelId)
+    this.ifcModels.delete(modelId)
+    this.lastTelemetryPaintSignatureByModel.delete(modelId)
+
+    if (this.ifcModels.size === 0) {
+      this.placeholderGroup.visible = true
+      this.clearSelectedItem()
+      return
+    }
+
+    const selected = getSelectedSpatialTreeNodeSummary()
+
+    if (selected.modelId === modelId) {
+      this.clearSelectedItem()
+    }
+
+    this.fitCameraToAllModels()
+  }
+
+  async isolateFederatedModel(payload: { modelId: string }): Promise<void> {
+    isolateFederatedModelState(payload.modelId)
+
+    for (const [modelId, model] of this.ifcModels) {
+      model.object.visible = modelId === payload.modelId
+    }
+  }
+
+  async isolateCategoryLayer(payload: {
+    category: string
+    modelId: string
+  }): Promise<void> {
+    isolateCategoryLayerState(payload.modelId, payload.category)
+
+    for (const [modelId, model] of this.ifcModels) {
+      const categories = getCategoryLayerSummaries().filter((layer) => layer.modelId === modelId)
+
+      for (const layer of categories) {
+        const localIds = this.ifcLoader.getCategoryLocalIds(modelId, layer.category)
+        await model.setVisible(localIds, layer.visible)
+      }
+
+      model.object.visible = modelId === payload.modelId
+    }
+  }
+
+  async resetAllLayers(): Promise<void> {
+    resetLayerStateStore()
+
+    for (const [modelId, model] of this.ifcModels) {
+      model.object.visible = true
+      await model.resetVisible()
+      await model.resetOpacity(undefined)
+
+      const categories = getCategoryLayerSummaries().filter((layer) => layer.modelId === modelId)
+
+      for (const layer of categories) {
+        const localIds = this.ifcLoader.getCategoryLocalIds(modelId, layer.category)
+        await model.setVisible(localIds, true)
+        await model.setOpacity(localIds, 1)
+      }
+    }
+  }
+
+  async selectSpatialTreeNode(payload: {
+    category: string
+    localId: number | null
+    modelId?: string | null
+  }): Promise<void> {
+    const modelId = payload.modelId
+
+    if (!modelId || payload.localId === null) {
+      this.clearSelectedItem()
+      return
+    }
+
+    const model = this.ifcModels.get(modelId)
+
+    if (!model) {
+      return
+    }
+
+    setSelectedSpatialTreeNodeSummary({
+      localId: payload.localId,
+      modelId,
+    })
+    await this.resetHighlights()
+
+    await this.highlightLocalId(modelId, payload.localId)
+
+    const details = await this.ifcLoader.getItemDetails(
+      model,
+      payload.localId,
+      payload.localId,
+    )
+
+    setSelectedIfcItemSummary({
+      ...details,
+      status: 'selected',
+      title: `Selected IFC Item #${details.localId}`,
+    })
+  }
+
+  private async loadBundledIfcSample(): Promise<void> {
+    await this.loadIfcModel(() => this.ifcLoader.loadBundledSample(), true)
+    await this.loadIfcModel(() => this.ifcLoader.loadBundledSampleCopy(), false)
+  }
+
+  private async loadIfcModel(
+    loadModel: () => Promise<FragmentsModel>,
+    replaceExisting: boolean,
+  ): Promise<void> {
+    try {
+      await this.ifcLoader.setup()
+
+      if (replaceExisting) {
+        await this.disposeAllLoadedIfcModels()
+      }
+
+      const model = await loadModel()
+      model.useCamera(this.camera)
+      this.positionFederatedModel(model)
+      this.scene.add(model.object)
+      this.ifcModels.set(model.modelId, model)
+      this.placeholderGroup.visible = false
+      const localIds = await model.getLocalIds()
+      this.telemetry.upsertModel(
+        model.modelId,
+        this.ifcLoader.getModelLabel(model.modelId),
+        localIds.slice(0, 120),
+      )
+      this.fitCameraToAllModels()
+      if (replaceExisting) {
+        this.clearSelectedItem()
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'Unknown IFC loading error.'
+
+      setIfcLoadSummary({
+        status: 'error',
+        statusDetail: `IFC loading failed. Placeholder scene remains active. ${detail}`,
+      })
+    }
+  }
+
+  private async disposeAllLoadedIfcModels(): Promise<void> {
+    for (const [modelId, model] of this.ifcModels) {
+      this.scene.remove(model.object)
+      await model.dispose()
+      this.ifcLoader.removeModel(modelId)
+      this.telemetry.removeModel(modelId)
+    }
+
+    this.ifcModels.clear()
+    this.lastTelemetryPaintSignatureByModel.clear()
+    this.placeholderGroup.visible = true
+    setSelectedSpatialTreeNodeSummary({ localId: null, modelId: null })
+  }
+
+  private clearSelectedItem(): void {
+    setSelectedSpatialTreeNodeSummary({ localId: null, modelId: null })
+    setSelectedIfcItemSummary({
+      attributes: [],
+      category: 'No item selected',
+      guid: 'Click any IFC element to inspect its BIM data.',
+      itemId: null,
+      localId: null,
+      modelId: '',
+      modelLabel: '',
+      status: 'empty',
+      title: 'Selected IFC Item',
+    })
+  }
+
+  private async handleSceneClick(event: MouseEvent): Promise<void> {
+    if (this.ifcModels.size === 0) {
+      return
+    }
+
+    this.controls.update()
+    this.camera.updateProjectionMatrix()
+    this.camera.updateWorldMatrix(true, true)
+    for (const model of this.ifcModels.values()) {
+      model.object.updateWorldMatrix(true, true)
+    }
+
+    const bounds = this.renderer.domElement.getBoundingClientRect()
+    this.pointer.x = ((event.clientX - bounds.left) / bounds.width) * 2 - 1
+    this.pointer.y = -((event.clientY - bounds.top) / bounds.height) * 2 + 1
+
+    await this.ifcLoader.fragments.core.update(true)
+    const result = await this.ifcPicker.getFullPick(this.pointer)
+
+    if (!result) {
+      this.clearSelectedItem()
+      return
+    }
+
+    const model = this.ifcModels.get(result.modelId)
+
+    if (!model) {
+      this.clearSelectedItem()
+      return
+    }
+
+    const details = await this.ifcLoader.getItemDetails(
+      model,
+      result.localId,
+      result.itemId,
+    )
+
+    await this.resetHighlights()
+    await this.highlightLocalId(details.modelId, details.localId)
+    setSelectedSpatialTreeNodeSummary({
+      localId: details.localId,
+      modelId: details.modelId,
+    })
+    setSelectedIfcItemSummary({
+      ...details,
+      status: 'selected',
+      title: `Selected IFC Item #${details.localId}`,
+    })
+  }
+
+  private async highlightLocalId(modelId: string, localId: number): Promise<void> {
+    const model = this.ifcModels.get(modelId)
+
+    if (!model) {
+      return
+    }
+
+    const telemetry = getTelemetryForItem(modelId, localId)
+    const color =
+      telemetry?.status === 'alert'
+        ? new Color('#ff6b67')
+        : telemetry?.status === 'warning'
+          ? new Color('#ffb454')
+          : new Color('#69e8b2')
+
+    await model.highlight([localId], {
+      ...HIGHLIGHT_STYLE,
+      color,
+    })
+  }
+
+  private async applyTelemetryColors(): Promise<void> {
+    for (const [modelId, model] of this.ifcModels) {
+      if (!getFederatedModelSummaries().find((item) => item.modelId === modelId)?.visible) {
+        continue
+      }
+
+      const groups = getTelemetryStatusGroupsByModel()[modelId] ?? {
+        alert: [],
+        normal: [],
+        warning: [],
+      }
+      const signature = [
+        groups.normal.join(','),
+        groups.warning.join(','),
+        groups.alert.join(','),
+      ].join('|')
+
+      if (signature === this.lastTelemetryPaintSignatureByModel.get(modelId)) {
+        continue
+      }
+
+      this.lastTelemetryPaintSignatureByModel.set(modelId, signature)
+      await model.resetColor(undefined)
+      await model.setColor(groups.normal, NORMAL_COLOR)
+      await model.setColor(groups.warning, WARNING_COLOR)
+      await model.setColor(groups.alert, ALERT_COLOR)
+    }
+  }
+
+  private async resetHighlights(): Promise<void> {
+    for (const model of this.ifcModels.values()) {
+      await model.resetHighlight()
+    }
+  }
+
+  private positionFederatedModel(model: FragmentsModel): void {
+    if (this.ifcModels.size === 0) {
+      model.object.position.set(0, 0, 0)
+      model.object.updateWorldMatrix(true, true)
+      return
+    }
+
+    const currentBounds = this.getFederatedBounds()
+
+    if (!currentBounds) {
+      return
+    }
+
+    const offsetX = currentBounds.max.x + FEDERATED_GAP - model.box.min.x
+    model.object.position.set(offsetX, 0, 0)
+    model.object.updateWorldMatrix(true, true)
+  }
+
+  private fitCameraToAllModels(): void {
+    const box = this.getFederatedBounds()
+
+    if (!box) {
+      return
+    }
+
+    this.fitCameraToBounds(box)
+  }
+
+  private fitCameraToBounds(box: Box3): void {
+    const size = box.getSize(new Vector3())
+    const center = box.getCenter(new Vector3())
+    const maxDimension = Math.max(size.x, size.y, size.z)
+    const distance = maxDimension * 1.35 || 18
+    const direction = this.camera.position
+      .clone()
+      .sub(this.controls.target)
+      .normalize()
+
+    if (direction.lengthSq() === 0) {
+      direction.copy(CAMERA_START).sub(CAMERA_TARGET).normalize()
+    }
+
+    this.controls.target.copy(center)
+    this.camera.position.copy(center.clone().add(direction.multiplyScalar(distance)))
+    this.camera.lookAt(center)
+  }
+
+  private getFederatedBounds(): Box3 | null {
+    if (this.ifcModels.size === 0) {
+      return null
+    }
+
+    const totalBounds = new Box3()
+    let initialized = false
+
+    for (const model of this.ifcModels.values()) {
+      const worldBox = model.box.clone().applyMatrix4(model.object.matrixWorld)
+
+      if (!initialized) {
+        totalBounds.copy(worldBox)
+        initialized = true
+      } else {
+        totalBounds.union(worldBox)
+      }
+    }
+
+    return initialized ? totalBounds : null
+  }
+
+  private resize(): void {
+    const { clientWidth, clientHeight } = this.host
+
+    if (clientWidth === 0 || clientHeight === 0) {
+      return
+    }
+
+    this.camera.aspect = clientWidth / clientHeight
+    this.camera.updateProjectionMatrix()
+    this.renderer.setSize(clientWidth, clientHeight, false)
+    this.ifcPickerResizeEvent.trigger(new Vector2(clientWidth, clientHeight))
+  }
+
+  private animate(): void {
+    const elapsed = this.clock.getElapsedTime()
+
+    for (const marker of this.deviceMarkers) {
+      const pulse = 0.5 + Math.sin(elapsed * 2.1 + marker.pulseOffset) * 0.5
+      const lift =
+        marker.status === 'alert' ? 0.16 : marker.status === 'warning' ? 0.09 : 0.04
+
+      marker.mesh.position.y = marker.baseY + pulse * lift
+      marker.mesh.material.emissiveIntensity =
+        marker.status === 'alert'
+          ? 0.44 + pulse * 0.36
+          : marker.status === 'warning'
+            ? 0.22 + pulse * 0.14
+            : 0.14 + pulse * 0.06
+    }
+
+    this.controls.update()
+    if (this.ifcModels.size > 0) {
+      void this.applyTelemetryColors()
+      void this.ifcLoader.fragments.core.update(false)
+    }
+    this.renderer.render(this.scene, this.camera)
+    this.frameHandle = window.requestAnimationFrame(this.animate)
+  }
+}
