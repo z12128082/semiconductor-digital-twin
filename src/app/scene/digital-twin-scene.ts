@@ -532,11 +532,15 @@ export class DigitalTwinScene {
       // the placeholder equipment is the live gear inside the bundled fab;
       // keep it whenever that building is present
       this.placeholderGroup.visible = this.ifcModels.has('fab-building-ifc')
+      // telemetry attaches to equipment only; models without any equipment
+      // categories (arbitrary architectural files) fall back to all items
+      // so the telemetry demo still has something to drive
       const localIds = await model.getLocalIds()
+      const equipmentIds = this.ifcLoader.getEquipmentLocalIds(model.modelId)
       this.telemetry.upsertModel(
         model.modelId,
         this.ifcLoader.getModelLabel(model.modelId),
-        localIds.slice(0, 120),
+        (equipmentIds.length > 0 ? equipmentIds : localIds).slice(0, 120),
       )
       this.fitCameraToAllModels()
       if (replaceExisting) {

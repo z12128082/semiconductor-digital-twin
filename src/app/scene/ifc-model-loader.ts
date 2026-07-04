@@ -40,11 +40,43 @@ interface LoadedModelMetadata {
   modelLabel: string
 }
 
+// Categories that represent operating equipment. Telemetry status only
+// applies to these; structural elements (walls, slabs, columns) have no
+// alert semantics and stay neutral.
+const EQUIPMENT_CATEGORIES = [
+  'IFCBUILDINGELEMENTPROXY',
+  'IFCFLOWTERMINAL',
+  'IFCUNITARYEQUIPMENT',
+  'IFCPUMP',
+  'IFCFAN',
+  'IFCVALVE',
+  'IFCTANK',
+]
+
 export class IfcModelLoader {
   readonly components = new Components()
   readonly fragments = this.components.get(FragmentsManager)
   readonly ifcLoader = this.components.get(IfcLoader)
   private readonly modelMetadata = new Map<string, LoadedModelMetadata>()
+
+  getEquipmentLocalIds(modelId: string): number[] {
+    const metadata = this.modelMetadata.get(modelId)
+
+    if (!metadata) {
+      return []
+    }
+
+    const ids: number[] = []
+
+    for (const category of EQUIPMENT_CATEGORIES) {
+      const items = metadata.categoryItems[category]
+      if (items) {
+        ids.push(...items)
+      }
+    }
+
+    return ids
+  }
 
   async setup(): Promise<void> {
     const workerUrl = await FragmentsManager.getWorker()
