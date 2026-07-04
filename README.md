@@ -14,10 +14,10 @@
 ## Demo Preview
 
 ### Ops overview
-![Ops overview](/Users/zhengzhongjie/BIM/docs/assets/ops-overview.png)
+![Ops overview](docs/assets/ops-overview.png)
 
 ### Selected item view
-![Selected item view](/Users/zhengzhongjie/BIM/docs/assets/item-selected.png)
+![Selected item view](docs/assets/item-selected.png)
 
 ## What It Does
 
