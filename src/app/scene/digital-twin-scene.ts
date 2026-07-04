@@ -7,7 +7,9 @@ import {
   Color,
   DirectionalLight,
   Fog,
+  GridHelper,
   Group,
+  LineBasicMaterial,
   MathUtils,
   Mesh,
   MeshStandardMaterial,
@@ -72,7 +74,7 @@ const STATUS_COLORS: Record<DeviceStatus, string> = {
 }
 
 const HIGHLIGHT_STYLE = {
-  color: new Color('#69e8b2'),
+  color: new Color('#6ee7ff'),
   opacity: 1,
   renderedFaces: RenderedFaces.TWO,
   transparent: false,
@@ -82,6 +84,12 @@ const NORMAL_COLOR = new Color('#69e8b2')
 const WARNING_COLOR = new Color('#ffb454')
 const ALERT_COLOR = new Color('#ff6b67')
 const FEDERATED_GAP = 4
+
+// lowest geometry of each bundled sample, in metres relative to grade
+const BUNDLED_GROUND_Y: Record<string, number> = {
+  'fab-building-ifc': -3.4,
+  'fab-support-annex-ifc': -0.3,
+}
 
 const DEVICE_LAYOUT: DeviceLayout[] = [
   { id: 'litho-01', position: [-9, 1.5, -6], size: [3.2, 3, 2.4], status: 'normal' },
@@ -125,14 +133,16 @@ export class DigitalTwinScene {
   private readonly scene = new Scene()
   private readonly deviceMarkers: DeviceMarker[] = []
   private readonly placeholderGroup = new Group()
+  private readonly federatedBounds = new Box3()
   private readonly ifcModels = new Map<string, FragmentsModel>()
   private lastTelemetryPaintSignatureByModel = new Map<string, string>()
   private frameHandle = 0
 
   constructor(host: HTMLDivElement) {
     this.host = host
-    this.scene.background = new Color('#07111a')
-    this.scene.fog = new Fog('#07111a', 24, 64)
+    ;(window as unknown as Record<string, unknown>).__twinScene = this
+    this.scene.background = new Color('#05070d')
+    this.scene.fog = new Fog('#05070d', 36, 200)
 
     this.camera = new PerspectiveCamera(42, 1, 0.1, 250)
     this.camera.position.copy(CAMERA_START)
@@ -163,8 +173,8 @@ export class DigitalTwinScene {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
     this.controls.enableDamping = true
     this.controls.target.copy(CAMERA_TARGET)
-    this.controls.minDistance = 12
-    this.controls.maxDistance = 48
+    this.controls.minDistance = 10
+    this.controls.maxDistance = 96
     this.controls.maxPolarAngle = MathUtils.degToRad(78)
     this.renderer.domElement.addEventListener('click', (event) => {
       void this.handleSceneClick(event)
@@ -201,41 +211,41 @@ export class DigitalTwinScene {
     const keyLight = new DirectionalLight('#dff3ff', 2.6)
     keyLight.position.set(14, 22, 10)
 
-    const rimLight = new DirectionalLight('#69e8b2', 0.8)
+    const rimLight = new DirectionalLight('#6ee7ff', 0.8)
     rimLight.position.set(-10, 8, -12)
 
     this.scene.add(ambient, keyLight, rimLight)
   }
 
   private setupEnvironment(): void {
-    const floor = new Mesh(
-      new BoxGeometry(34, 1, 22),
+    // deep-space deck below the sub-fab level; the IFC building provides
+    // slabs, columns, and walls, so the environment stays minimal
+    const ground = new Mesh(
+      new PlaneGeometry(320, 320),
       new MeshStandardMaterial({
-        color: '#10283a',
-        roughness: 0.88,
-        metalness: 0.12,
+        color: '#04060b',
+        roughness: 1,
+        metalness: 0,
       }),
     )
-    floor.position.set(0, -0.5, 0)
-    this.scene.add(floor)
+    ground.rotation.x = -Math.PI / 2
+    ground.position.set(0, -3.78, 0)
+    this.scene.add(ground)
 
-    const cleanroom = new Mesh(
-      new BoxGeometry(29, 0.25, 18),
-      new MeshStandardMaterial({
-        color: '#15374d',
-        roughness: 0.6,
-        metalness: 0.16,
-      }),
-    )
-    cleanroom.position.set(0, 0.02, 0)
-    this.scene.add(cleanroom)
+    const grid = new GridHelper(160, 80, 0x6ee7ff, 0x123244)
+    const gridMaterial = grid.material as LineBasicMaterial
+    gridMaterial.transparent = true
+    gridMaterial.opacity = 0.22
+    gridMaterial.depthWrite = false
+    grid.position.set(0, -3.74, 0)
+    this.scene.add(grid)
 
     const aisle = new Mesh(
       new PlaneGeometry(28, 2.6),
       new MeshStandardMaterial({
-        color: '#1f4258',
-        emissive: '#173343',
-        emissiveIntensity: 0.25,
+        color: '#12314a',
+        emissive: '#123a52',
+        emissiveIntensity: 0.3,
         metalness: 0.08,
         roughness: 0.72,
       }),
@@ -243,46 +253,6 @@ export class DigitalTwinScene {
     aisle.rotation.x = -Math.PI / 2
     aisle.position.set(0, 0.14, 0)
     this.scene.add(aisle)
-
-    const serviceBridge = new Mesh(
-      new BoxGeometry(24, 0.5, 1.2),
-      new MeshStandardMaterial({
-        color: '#27516b',
-        roughness: 0.48,
-        metalness: 0.22,
-      }),
-    )
-    serviceBridge.position.set(0, 6.5, -8.6)
-    this.scene.add(serviceBridge)
-
-    const pipeRun = new Mesh(
-      new BoxGeometry(24, 0.28, 0.32),
-      new MeshStandardMaterial({
-        color: '#6ce6b1',
-        emissive: '#6ce6b1',
-        emissiveIntensity: 0.18,
-        roughness: 0.42,
-        metalness: 0.28,
-      }),
-    )
-    pipeRun.position.set(0, 6.95, -8.25)
-    this.scene.add(pipeRun)
-
-    const wallMaterial = new MeshStandardMaterial({
-      color: '#0c202f',
-      roughness: 0.88,
-      metalness: 0.06,
-      transparent: true,
-      opacity: 0.46,
-    })
-
-    const northWall = new Mesh(new BoxGeometry(34, 9, 0.6), wallMaterial)
-    northWall.position.set(0, 4.5, -11)
-    this.scene.add(northWall)
-
-    const eastWall = new Mesh(new BoxGeometry(0.6, 9, 22), wallMaterial)
-    eastWall.position.set(17, 4.5, 0)
-    this.scene.add(eastWall)
   }
 
   private buildPlaceholderFab(): void {
@@ -559,7 +529,9 @@ export class DigitalTwinScene {
       this.positionFederatedModel(model)
       this.scene.add(model.object)
       this.ifcModels.set(model.modelId, model)
-      this.placeholderGroup.visible = false
+      // the placeholder equipment is the live gear inside the bundled fab;
+      // keep it whenever that building is present
+      this.placeholderGroup.visible = this.ifcModels.has('fab-building-ifc')
       const localIds = await model.getLocalIds()
       this.telemetry.upsertModel(
         model.modelId,
@@ -590,6 +562,7 @@ export class DigitalTwinScene {
 
     this.ifcModels.clear()
     this.lastTelemetryPaintSignatureByModel.clear()
+    this.federatedBounds.makeEmpty()
     this.placeholderGroup.visible = true
     setSelectedSpatialTreeNodeSummary({ localId: null, modelId: null })
   }
@@ -716,21 +689,27 @@ export class DigitalTwinScene {
   }
 
   private positionFederatedModel(model: FragmentsModel): void {
-    if (this.ifcModels.size === 0) {
-      model.object.position.set(0, 0, 0)
-      model.object.updateWorldMatrix(true, true)
-      return
+    // Fragments normalises each model's origin unpredictably and updates
+    // model.box asynchronously, so re-base every model from the box it has
+    // at load time (still local then) and track federation bounds
+    // synchronously ourselves: centre on XZ, ground the lowest geometry at
+    // the sample's known below-grade depth (or at grade for local files),
+    // and stack additional models along +X.
+    const local = model.box.clone()
+    const groundY = BUNDLED_GROUND_Y[model.modelId] ?? 0
+    const centerX = (local.min.x + local.max.x) / 2
+    const centerZ = (local.min.z + local.max.z) / 2
+    const baseY = groundY - local.min.y
+
+    if (this.ifcModels.size === 0 || this.federatedBounds.isEmpty()) {
+      model.object.position.set(-centerX, baseY, -centerZ)
+    } else {
+      const offsetX = this.federatedBounds.max.x + FEDERATED_GAP - local.min.x
+      model.object.position.set(offsetX, baseY, -centerZ)
     }
 
-    const currentBounds = this.getFederatedBounds()
-
-    if (!currentBounds) {
-      return
-    }
-
-    const offsetX = currentBounds.max.x + FEDERATED_GAP - model.box.min.x
-    model.object.position.set(offsetX, 0, 0)
     model.object.updateWorldMatrix(true, true)
+    this.federatedBounds.union(local.translate(model.object.position))
   }
 
   private fitCameraToAllModels(): void {
@@ -763,25 +742,11 @@ export class DigitalTwinScene {
   }
 
   private getFederatedBounds(): Box3 | null {
-    if (this.ifcModels.size === 0) {
+    if (this.ifcModels.size === 0 || this.federatedBounds.isEmpty()) {
       return null
     }
 
-    const totalBounds = new Box3()
-    let initialized = false
-
-    for (const model of this.ifcModels.values()) {
-      const worldBox = model.box.clone().applyMatrix4(model.object.matrixWorld)
-
-      if (!initialized) {
-        totalBounds.copy(worldBox)
-        initialized = true
-      } else {
-        totalBounds.union(worldBox)
-      }
-    }
-
-    return initialized ? totalBounds : null
+    return this.federatedBounds.clone()
   }
 
   private resize(): void {

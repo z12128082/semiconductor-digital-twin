@@ -7,20 +7,20 @@
   font-weight: 400;
   color: #e6f2ff;
   background:
-    radial-gradient(circle at top left, rgba(35, 148, 255, 0.18), transparent 32%),
-    radial-gradient(circle at 80% 20%, rgba(103, 255, 194, 0.16), transparent 24%),
-    linear-gradient(180deg, #07111a 0%, #0b1722 58%, #071019 100%);
+    radial-gradient(circle at top left, rgba(110, 231, 255, 0.14), transparent 32%),
+    radial-gradient(circle at 80% 20%, rgba(103, 255, 194, 0.1), transparent 24%),
+    linear-gradient(180deg, #05070d 0%, #081018 58%, #05070d 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  --bg: rgba(6, 14, 22, 0.92);
-  --panel: rgba(12, 25, 37, 0.84);
+  --bg: rgba(5, 8, 14, 0.92);
+  --panel: rgba(10, 18, 30, 0.84);
   --line: rgba(120, 168, 204, 0.18);
   --text: #e6f2ff;
   --muted: #94aac0;
-  --accent: #69e8b2;
+  --accent: #6ee7ff;
   --warning: #ffb454;
   --danger: #ff6b67;
   --shadow: 0 30px 80px rgba(0, 0, 0, 0.35);

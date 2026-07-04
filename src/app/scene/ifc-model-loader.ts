@@ -20,10 +20,10 @@ import {
 
 const assetUrl = (path: string) => `${import.meta.env.BASE_URL}${path}`
 
-const SAMPLE_IFC_URL = assetUrl('assets/ifc/column-straight-rectangle-tessellation.ifc')
-const SAMPLE_IFC_NAME = 'column-straight-rectangle-tessellation.ifc'
-const SAMPLE_IFC_COPY_URL = assetUrl('assets/ifc/column-straight-rectangle-tessellation-copy.ifc')
-const SAMPLE_IFC_COPY_NAME = 'column-straight-rectangle-tessellation-copy.ifc'
+const SAMPLE_IFC_URL = assetUrl('assets/ifc/fab-building.ifc')
+const SAMPLE_IFC_NAME = 'fab-building.ifc'
+const SAMPLE_IFC_COPY_URL = assetUrl('assets/ifc/fab-support-annex.ifc')
+const SAMPLE_IFC_COPY_NAME = 'fab-support-annex.ifc'
 const LOCAL_WASM_PATH = assetUrl('assets/wasm/web-ifc/')
 
 interface IfcInput {
